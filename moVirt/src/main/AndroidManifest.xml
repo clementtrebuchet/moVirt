@@ -43,7 +43,7 @@
             android:name="org.ovirt.mobile.movirt.provider.Provider"
             android:authorities="org.ovirt.mobile.movirt.provider"
             android:enabled="true"
-            android:exported="false" >
+            android:exported="true" > <!--This is really just a hack to make it work with the account authenticator-->
         </provider>
 
         <service android:name="org.ovirt.mobile.movirt.auth.AuthenticatorService_" >

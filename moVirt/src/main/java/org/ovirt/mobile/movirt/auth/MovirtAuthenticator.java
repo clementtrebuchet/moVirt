@@ -15,8 +15,14 @@ import org.androidannotations.annotations.Bean;
 import org.androidannotations.annotations.EBean;
 import org.androidannotations.annotations.SystemService;
 import org.androidannotations.annotations.UiThread;
+import org.ovirt.mobile.movirt.model.CaCert;
+import org.ovirt.mobile.movirt.provider.ProviderFacade;
 import org.ovirt.mobile.movirt.rest.OVirtClient;
 import org.ovirt.mobile.movirt.ui.AuthenticatorActivity_;
+
+import java.security.cert.Certificate;
+import java.util.Collection;
+import java.util.List;
 
 
 @EBean
@@ -37,6 +43,8 @@ public class MovirtAuthenticator extends AbstractAccountAuthenticator {
     public static final String DISABLE_HTTPS = "org.ovirt.mobile.movirt.disablehttps";
 
     public static final String ENFORCE_HTTP_BASIC = "org.ovirt.mobile.movirt.enforceHttpBasic";
+
+    public static final String CUSTOM_CERTIFICATE = "org.ovirt.mobile.movirt.customCertificate";
 
     public static final Account MOVIRT_ACCOUNT = new Account(MovirtAuthenticator.ACCOUNT_NAME, MovirtAuthenticator.ACCOUNT_TYPE);
 
@@ -87,6 +95,7 @@ public class MovirtAuthenticator extends AbstractAccountAuthenticator {
             final String password = getPassword();
             if (username != null && password != null) {
                 authToken = client.login(getApiUrl(), username, password, disableHttps(), hasAdminPermissions());
+
                 if(!TextUtils.isEmpty(authToken)) {
                     accountManager.setAuthToken(account, authTokenType, authToken);
                 }

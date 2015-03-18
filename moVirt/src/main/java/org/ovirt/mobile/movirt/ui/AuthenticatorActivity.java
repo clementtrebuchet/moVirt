@@ -6,6 +6,7 @@ import android.accounts.AccountManager;
 import android.content.ContentResolver;
 import android.content.Intent;
 import android.text.TextUtils;
+import android.util.Log;
 import android.view.View;
 import android.widget.CheckBox;
 import android.widget.EditText;
@@ -24,13 +25,41 @@ import org.androidannotations.annotations.ViewById;
 import org.ovirt.mobile.movirt.Broadcasts;
 import org.ovirt.mobile.movirt.R;
 import org.ovirt.mobile.movirt.auth.MovirtAuthenticator;
+import org.ovirt.mobile.movirt.model.CaCert;
 import org.ovirt.mobile.movirt.provider.OVirtContract;
+import org.ovirt.mobile.movirt.provider.ProviderFacade;
+import org.ovirt.mobile.movirt.rest.NullHostnameVerifier;
 import org.ovirt.mobile.movirt.rest.OVirtClient;
 import org.ovirt.mobile.movirt.sync.EventsHandler;
 import org.ovirt.mobile.movirt.sync.SyncUtils;
 
+import java.io.BufferedInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.ObjectOutput;
+import java.io.ObjectOutputStream;
+import java.net.MalformedURLException;
+import java.net.URL;
+import java.net.URLConnection;
+import java.security.cert.Certificate;
+import java.security.cert.CertificateException;
+import java.security.cert.CertificateFactory;
+import java.security.cert.X509Certificate;
+
+import javax.net.ssl.HttpsURLConnection;
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLSocketFactory;
+import javax.net.ssl.TrustManager;
+import javax.net.ssl.X509TrustManager;
+
 @EActivity(R.layout.authenticator_activity)
 public class AuthenticatorActivity extends AccountAuthenticatorActivity {
+
+    private static final String TAG = AuthenticatorActivity.class.getSimpleName();
+
+    @Bean
+    NullHostnameVerifier verifier;
 
     @SystemService
     AccountManager accountManager;
@@ -68,6 +97,11 @@ public class AuthenticatorActivity extends AccountAuthenticatorActivity {
     @Bean
     EventsHandler eventsHandler;
 
+    @Bean
+    ProviderFacade providerFacade;
+
+    Certificate ca = null;
+
     @AfterViews
     void init() {
         txtEndpoint.setText(authenticator.getApiUrl());
@@ -78,6 +112,96 @@ public class AuthenticatorActivity extends AccountAuthenticatorActivity {
         chkDisableHttps.setChecked(authenticator.disableHttps());
         enforceHttpBasicAuth.setChecked(authenticator.enforceBasicAuth());
 
+    }
+
+    @Click(R.id.btnImportCaCrt)
+    void importCaCrt() {
+        downloadCa();
+    }
+
+    @Background
+    void downloadCa() {
+        String endpoint = txtEndpoint.getText().toString();
+        // todo open a dialog showing the path precofigured properly but changable
+        URL url = null;
+        try {
+            url = new URL(endpoint);
+            url = new URL("http://" + url.getHost() + "/ca.crt");
+        } catch (MalformedURLException e) {
+            showToast("The endpoint is not a valid URL");
+            return;
+        }
+
+        CertificateFactory cf = null;
+        try {
+            cf = CertificateFactory.getInstance("X.509");
+        } catch (CertificateException e) {
+            showToast("Problem getting the certificate factory: " + e.getMessage());
+            return;
+        }
+
+        InputStream caInput = null;
+
+        try {
+            caInput = new BufferedInputStream(url.openStream());
+        } catch (IOException e) {
+            showToast("Error loading certificate: " + e.getMessage());
+            return;
+        }
+
+        Certificate ca = null;
+        try {
+            ca = cf.generateCertificate(caInput);
+            // todo show it in dialog and proceed only if agreed
+            System.out.println("ca=" + ((X509Certificate) ca).getSubjectDN());
+            okImportCa(ca);
+        } catch (CertificateException e) {
+            showToast("Error CA generation: " + e.getMessage());
+            return;
+        } finally {
+            try {
+                caInput.close();
+            } catch (IOException e) {
+                // really nothing to do about this one...
+            }
+        }
+
+
+    }
+
+    void okImportCa(Certificate ca) {
+        this.ca = ca;
+
+        ByteArrayOutputStream bos = new ByteArrayOutputStream();
+        ObjectOutput out = null;
+        try {
+            try {
+                out = new ObjectOutputStream(bos);
+                out.writeObject(ca);
+                byte[] caAsBlob = bos.toByteArray();
+                CaCert caCertEntity = new CaCert();
+                // nvm, only support one
+                caCertEntity.setId(1);
+                caCertEntity.setContent(caAsBlob);
+                providerFacade.deleteAll(OVirtContract.CaCert.CONTENT_URI);
+                providerFacade.batch().insert(caCertEntity).apply();
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+        } finally {
+            try {
+                if (out != null) {
+                    out.close();
+                }
+            } catch (IOException ex) {
+                // ignore close exception
+            }
+            try {
+                bos.close();
+            } catch (IOException ex) {
+                // ignore close exception
+            }
+        }
     }
 
     @Click(R.id.btnCreate)
@@ -111,34 +235,30 @@ public class AuthenticatorActivity extends AccountAuthenticatorActivity {
         setUserData(MovirtAuthenticator.MOVIRT_ACCOUNT, apiUrl, name, password, hasAdminPermissions, disableHttps, enforceHttpBasic);
 
         changeProgressVisibilityTo(View.VISIBLE);
-        String token = "";
-        boolean success = true;
+
         try {
-            token = client.login(apiUrl, name, password, disableHttps, hasAdminPermissions);
+            String token = client.login(apiUrl, name, password, disableHttps, hasAdminPermissions);
+            onTokenReceived(token, endpointChanged);
         } catch (Exception e) {
-            showToast("Error logging in: " + e.getMessage());
-            success = false;
-            return;
-        } finally {
             changeProgressVisibilityTo(View.GONE);
-            if (success) {
-                if (TextUtils.isEmpty(token)) {
-                    showToast("Error: the returned token is empty");
-                    return;
-                } else {
-                    showToast("Login successful");
-                    if (endpointChanged) {
-                        // there is a different set of events and since we are counting only the increments, this ones are not needed anymore
-                        eventsHandler.deleteEvents();
-                    }
-
-                    syncUtils.triggerRefresh();
-                }
-            } else {
-                return;
-            }
+            showToast("Error logging in: " + e.getMessage());
         }
+    }
 
+    void onTokenReceived(String token, boolean endpointChanged) {
+        changeProgressVisibilityTo(View.GONE);
+        if (TextUtils.isEmpty(token)) {
+            showToast("Error: the returned token is empty");
+            return;
+        } else {
+            showToast("Login successful");
+            if (endpointChanged) {
+                // there is a different set of events and since we are counting only the increments, this ones are not needed anymore
+                eventsHandler.deleteEvents();
+            }
+
+            syncUtils.triggerRefresh();
+        }
         accountManager.setAuthToken(MovirtAuthenticator.MOVIRT_ACCOUNT, MovirtAuthenticator.AUTH_TOKEN_TYPE, token);
 
         final Intent intent = new Intent();
@@ -167,6 +287,7 @@ public class AuthenticatorActivity extends AccountAuthenticatorActivity {
         accountManager.setUserData(account, MovirtAuthenticator.HAS_ADMIN_PERMISSIONS, Boolean.toString(hasAdminPermissions));
         accountManager.setUserData(account, MovirtAuthenticator.DISABLE_HTTPS, Boolean.toString(disableHttps));
         accountManager.setUserData(account, MovirtAuthenticator.ENFORCE_HTTP_BASIC, Boolean.toString(enforceHttpBasic));
+        accountManager.getUserData(account, MovirtAuthenticator.API_URL);
         accountManager.setPassword(account, password);
     }
 
